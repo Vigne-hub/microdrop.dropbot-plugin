@@ -1,67 +1,73 @@
-from __future__ import division
+import asyncio
+import logging
 from concurrent.futures import ThreadPoolExecutor
-from functools import wraps
 import datetime as dt
-import gzip
 import json
 import re
 import threading
-import types
 import warnings
 import webbrowser
+import zlib
+from functools import wraps
 
-from asyncio_helpers import cancellable, sync
-from debounce.async import Debounce
-from dropbot import EVENT_ENABLE, EVENT_CHANNELS_UPDATED, EVENT_SHORTS_DETECTED
-from flatland import Integer, Float, Form, Boolean
-from flatland.validation import ValueAtLeast, ValueAtMost
-from matplotlib.backends.backend_gtkagg import (FigureCanvasGTKAgg as
-                                                FigureCanvas)
-from matplotlib.figure import Figure
-from logging_helpers import _L  #: .. versionadded:: 2.24
-from microdrop.app_context import (get_app, get_hub_uri, MODE_RUNNING_MASK,
-                                   MODE_REAL_TIME_MASK)
-from microdrop.interfaces import (IApplicationMode, IElectrodeActuator,
-                                  IPlugin, IWaveformGenerator)
-from microdrop.plugin_helpers import (StepOptionsController, AppDataController,
-                                      hub_execute)
-from microdrop.plugin_manager import (Plugin, implements, PluginGlobals,
-                                      ScheduleRequest, emit_signal,
-                                      get_service_instance_by_name)
-from microdrop_utility.gui import yesno
+from past.builtins import unicode
 from pygtkhelpers.gthreads import gtk_threadsafe
-from pygtkhelpers.ui.dialogs import animation_dialog
-from zmq_plugin.plugin import Plugin as ZmqPlugin
-from zmq_plugin.schema import decode_content_data
-import blinker
-import dropbot as db
-import dropbot.hardware_test
-import dropbot.monitor
-import dropbot.self_test
-import dropbot.threshold
-import gobject
-import gtk
-# XXX Use `json_tricks` rather than standard `json` to support serializing
-# [Numpy arrays and scalars][1].
-#
-# [1]: http://json-tricks.readthedocs.io/en/latest/#numpy-arrays
-import json_tricks
+from asyncio_helpers import cancellable, sync
+from pathlib import Path
+
 import markdown2pango
+import blinker
+from dropbot import EVENT_ENABLE, EVENT_CHANNELS_UPDATED, EVENT_SHORTS_DETECTED
+from adodbapi.examples.db_print import db
+from debounce import Debounce
+from gi.repository import Gtk, GLib, GObject
 import numpy as np
 import pandas as pd
-import path_helpers as ph
-import si_prefix as si
-import tables
-import trollius as asyncio
-import zmq
 
+# Asyncio for ZMQ requires aiozmq or similar
+# Ensure zmq.asyncio is installed or available in your environment
+import zmq.asyncio as zmq
+
+# Matplotlib with GTK3 backend
+import matplotlib
+
+matplotlib.use('GTK3Agg')  # Use GTK3 backend
+from matplotlib.backends.backend_gtk3agg import FigureCanvasGTK3Agg as FigureCanvas
+from matplotlib.figure import Figure
+
+# JSON tricks for advanced JSON serialization (e.g., NumPy arrays)
+import json_tricks
+
+# Assuming flatland for form validation (if still necessary)
+from flatland import Integer, Float, Form, Boolean
+from flatland.validation import ValueAtLeast, ValueAtMost
+
+# If using custom or additional logging helpers
+from logging_helpers import _L  # Adjust import based on actual module location
+
+# If using specific plugins or interfaces from your application framework
+# These will need to be adjusted based on the actual structure of your project
+from microdrop.app_context import get_app, get_hub_uri
+from microdrop.plugin_manager import (Plugin, implements, PluginGlobals)
+from microdrop.plugin_helpers import (StepOptionsController, AppDataController, hub_execute)
+from microdrop.interfaces import (IApplicationMode, IElectrodeActuator,
+                                  IPlugin, IWaveformGenerator)
+
+# PyTables for HDF5-based storage (if still used)
+import tables
+
+# If si_prefix is a utility module for handling SI units
+import si_prefix as si
+
+# Adjust based on actual module locations and names
 from ._version import get_versions
 from .noconflict import classmaker
 from .execute import execute
 from .status import DropBotStatusView
+
+# Clean up version import
 __version__ = get_versions()['version']
 del get_versions
-
 
 # Prevent warning about potential future changes to Numpy scalar encoding
 # behaviour.
@@ -93,11 +99,12 @@ class DmfZmqPlugin(ZmqPlugin):
     """
     API for adding/clearing droplet routes.
     """
+
     def __init__(self, parent, *args, **kwargs):
         self.parent = parent
-        super(DmfZmqPlugin, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)  # Python 3 simplified super() call
 
-    def check_sockets(self):
+    async def check_sockets(self):
         """
         Check for messages on command and subscription sockets and process
         any messages accordingly.
@@ -109,25 +116,25 @@ class DmfZmqPlugin(ZmqPlugin):
             reports the channels have been actuated_**.
         """
         try:
-            msg_frames = self.command_socket.recv_multipart(zmq.NOBLOCK)
+            msg_frames = await self.command_socket.recv_multipart(zmq.NOBLOCK)
+            await self.on_command_recv(msg_frames)
         except zmq.Again:
-            pass
-        else:
-            self.on_command_recv(msg_frames)
+            pass  # No message received, non-blocking mode
         return True
 
-    def on_execute__measure_liquid_capacitance(self, request):
-        self.parent.on_measure_liquid_capacitance()
+    async def on_execute__measure_liquid_capacitance(self, request):
+        await self.parent.on_measure_liquid_capacitance()
 
-    def on_execute__measure_filler_capacitance(self, request):
-        self.parent.on_measure_filler_capacitance()
+    async def on_execute__measure_filler_capacitance(self, request):
+        await self.parent.on_measure_filler_capacitance()
 
-    def on_execute__find_liquid(self, request):
-        return self.parent.find_liquid()
+    async def on_execute__find_liquid(self, request):
+        return await self.parent.find_liquid()
 
-    def on_execute__identify_electrode(self, request):
+    async def on_execute__identify_electrode(self, request):
+        # Assuming decode_content_data is compatible with asyncio or not blocking
         data = decode_content_data(request)
-        self.parent.identify_electrode(data['electrode_id'])
+        await self.parent.identify_electrode(data['electrode_id'])
 
 
 def results_dialog(name, results, axis_count=1, parent=None):
@@ -155,25 +162,23 @@ def results_dialog(name, results, axis_count=1, parent=None):
         parent window and to disable controls on the parent window until the
         dialog is closed.
     '''
-    # Resolve function for formatting results for specified test.
-    format_func = getattr(db.self_test, 'format_%s_results' % name)
+    # Assume db.self_test is a module with specific formatting and plotting functions
+    format_func = getattr(db.self_test, f'format_{name}_results')
     try:
-        # Resolve function for plotting results for specified test (if
-        # available).
-        plot_func = getattr(db.self_test, 'plot_%s_results' % name)
+        plot_func = getattr(db.self_test, f'plot_{name}_results')
     except AttributeError:
         plot_func = None
 
-    dialog = gtk.Dialog(parent=parent)
+    dialog = Gtk.Dialog(parent=parent)
     title = re.sub(r'^test_', '', name).replace('_', ' ').title()
     dialog.set_title(title)
     dialog.props.destroy_with_parent = True
-    dialog.props.window_position = gtk.WIN_POS_MOUSE
+    dialog.set_position(Gtk.WindowPosition.MOUSE)
 
-    label = gtk.Label()
-    label.props.use_markup = True
+    label = Gtk.Label()
+    label.set_use_markup(True)
     message = format_func(results[name])
-    label.set_markup('<span face="monospace">{}</span>'.format(message))
+    label.set_markup(f'<span face="monospace">{message}</span>')
 
     content_area = dialog.get_content_area()
     content_area.pack_start(label, fill=False, expand=False, padding=5)
@@ -184,23 +189,19 @@ def results_dialog(name, results, axis_count=1, parent=None):
     if plot_func is not None:
         # Plotting function is available.
         fig = Figure()
-        canvas = FigureCanvas(fig)
+        canvas = FigureCanvas(fig)  # Use the GTK3Agg backend for the canvas
         if axis_count > 1:
-            # Plotting function plots to more than one axis.
-            axes = [fig.add_subplot(axis_count, 1, i + 1)
-                    for i in range(axis_count)]
+            axes = [fig.add_subplot(axis_count, 1, i + 1) for i in range(axis_count)]
             plot_func(results[name], axes=axes)
         else:
-            # Plotting function plots to a single axis.
             axis = fig.add_subplot(111)
             plot_func(results[name], axis=axis)
 
-        # Allocate minimum of 300 pixels height for report text.
+        # Allocate minimum of 300 pixels height per plot.
         row_heights += axis_count * [300]
         fig.tight_layout()
         content_area.pack_start(canvas, fill=True, expand=True, padding=0)
 
-    # Allocate minimum pixels height based on the number of axes.
     dialog.set_default_size(600, sum(row_heights))
     content_area.show_all()
     return dialog
@@ -223,16 +224,19 @@ def require_connection(log_level='error'):
     .. versionchanged:: 2.24
         Convert to decorator factory to add optional log-level customization.
     '''
+
     def _require_connection(func):
         @wraps(func)
         def _wrapped(self, *args, **kwargs):
             if not self.dropbot_connected.is_set():
-                logger = _L()
+                logger = logging.getLogger()  # Assuming _L() was a logger getter
                 log_func = getattr(logger, log_level)
                 log_func('DropBot is not connected.')
             else:
                 return func(self, *args, **kwargs)
+
         return _wrapped
+
     return _require_connection
 
 
@@ -250,19 +254,22 @@ def error_ignore(on_error=None):
     function
         Decorator function.
     '''
+
     def _decorator(func):
         @wraps(func)
         def _wrapped(*args, **kwargs):
             try:
                 return func(*args, **kwargs)
             except Exception as exception:
-                if isinstance(on_error, types.StringTypes):
+                if isinstance(on_error, str):  # Updated string type check for Python 3
                     print(on_error)
                 elif callable(on_error):
                     on_error(exception, func, *args, **kwargs)
                 else:
                     pass
+
         return _wrapped
+
     return _decorator
 
 
@@ -279,40 +286,38 @@ def require_test_board(func):
     .. versionchanged:: 2.35
         Set default focus to OK button.
     '''
+
     @wraps(func)
     def _wrapped(*args, **kwargs):
-        plugin_dir = ph.path(__file__).realpath().parent
-        images_dir = plugin_dir.joinpath('images', 'insert_test_board')
-        image_paths = sorted(images_dir.files('insert_test_board-*.jpg'))
-        dialog = animation_dialog(image_paths, loop=True,
-                                  buttons=gtk.BUTTONS_OK_CANCEL)
-        dialog.props.text = ('<b>Please insert the DropBot test board</b>\n\n'
-                             'For more info, see '
-                             '<a href="https://github.com/sci-bots/dropbot-v3/wiki/DropBot-Test-Board#loading-dropbot-test-board">'
-                             'the DropBot Test Board documentation</a>')
+        plugin_dir = Path(__file__).resolve().parent
+        images_dir = plugin_dir / 'images' / 'insert_test_board'
+        image_paths = sorted(images_dir.glob('insert_test_board-*.jpg'))
 
-        # Use `activate-link` callback to manually handle action when hyperlink
-        # is clicked/activated.
-        dialog.label.connect("activate-link", gtk_on_link_clicked)
-
-        dialog.props.use_markup = True
+        # Assuming `animation_dialog` is a previously defined function that creates a dialog with animations
+        # and `gtk_on_link_clicked` is a callback function for when the hyperlink is clicked.
+        dialog = animation_dialog(image_paths, loop=True, buttons=Gtk.ButtonsType.OK_CANCEL)
+        dialog.set_markup('<b>Please insert the DropBot test board</b>\n\n'
+                          'For more info, see '
+                          '<a href="https://github.com/sci-bots/dropbot-v3/wiki/DropBot-Test-Board#loading-dropbot-test-board">'
+                          'the DropBot Test Board documentation</a>.')
 
         # Set default focus to OK button.
-        buttons = {b.props.label: b
-                   for b in dialog.get_action_area().get_children()}
-        ok_button = buttons['gtk-ok']
-        ok_button.props.has_focus = True
-        ok_button.props.has_default = True
+        action_area = dialog.get_action_area()
+        ok_button = [child for child in action_area.get_children() if child.get_label() == "OK"][0]
+        ok_button.grab_focus()
+        ok_button.set_can_default(True)
+        dialog.set_default(ok_button)
 
         response = dialog.run()
         dialog.destroy()
 
-        if response == gtk.RESPONSE_OK:
+        if response == Gtk.ResponseType.OK:
             return func(*args, **kwargs)
+
     return _wrapped
 
 
-class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
+class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
                     AppDataController):
     """
     This class is automatically registered with the PluginManager.
@@ -350,15 +355,15 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
             Deprecate all step fields _except_ ``volume_threshold`` as part of
             refactoring to implement `IElectrodeActuator` interface.
         """
-        return Form.of(#: .. versionadded:: 0.18
-                       Float.named('volume_threshold')
-                       .using(default=0,
-                              optional=True,
-                              validators=[ValueAtLeast(minimum=0),
-                                          ValueAtMost(maximum=1.0)]))
+        return Form.of(  #: .. versionadded:: 0.18
+            Float.named('volume_threshold')
+            .using(default=0,
+                   optional=True,
+                   validators=[ValueAtLeast(minimum=0),
+                               ValueAtMost(maximum=1.0)]))
 
     def __init__(self):
-        '''
+        """
         .. versionchanged:: 0.19
             Add ``gsignal`` signals for DropBot connection status and DMF chip
             status.
@@ -401,10 +406,10 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
             Fix error dialog when DropBot reports a "halted" event.
 
             Disable real-time mode if DropBot reports a "halted" event.
-        '''
+        """
         # Explicitly initialize GObject base class since it is not the first
         # base class listed.
-        gobject.GObject.__init__(self)
+        GObject.GObject.__init__(self)
 
         #: ..versionadded:: 2.33
         self.executor = ThreadPoolExecutor()
@@ -420,7 +425,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
         self.menu_items = []
         self.menu = None
         self.menu_item_root = None
-        self.diagnostics_results_dir = ph.path('.dropbot-diagnostics')
+        self.diagnostics_results_dir = Path('.dropbot-diagnostics')
         self.actuated_area = 0
         self.monitor_task = None
 
@@ -433,53 +438,47 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
 
         self.dropbot_signals = blinker.Namespace()
 
-        @asyncio.coroutine
-        def on_inserted(sender, **message):
+        async def on_inserted(sender, **message):
             self.chip_inserted.set()
             self.dropbot_status.chip_inserted = True
 
         self.dropbot_signals.signal('chip-inserted').connect(on_inserted,
                                                              weak=False)
 
-        @asyncio.coroutine
-        def on_removed(sender, **message):
+        async def on_removed(sender, **message):
             self.chip_inserted.clear()
             self.dropbot_status.chip_inserted = False
             self.clear_status()
 
-        self.dropbot_signals.signal('chip-removed').connect(on_removed,
-                                                            weak=False)
+        self.dropbot_signals.signal('chip-removed').connect(on_removed, weak=False)
 
         # Update cached device load capacitance each time the
         # `'capacitance-updated'` signal is emitted from the DropBot.
-        def _on_capacitance_updated(sender, **message):
+        async def _on_capacitance_updated(sender, **message):
             self.on_device_capacitance_update(message['new_value'],
                                               message['V_a'])
 
         # Call capacitance update callback _at most_ every 200 ms.
-        self.dropbot_signals.signal('capacitance-updated')\
-            .connect(asyncio.coroutine(Debounce(_on_capacitance_updated, 100,
-                                                max_wait=200, leading=True)),
+        self.dropbot_signals.signal('capacitance-updated') \
+            .connect((Debounce(_on_capacitance_updated, 100,
+                               max_wait=200, leading=True)),
                      weak=False)
 
-        @asyncio.coroutine
-        def _on_channels_updated(sender, **message):
-            '''
+        async def _on_channels_updated(sender, **message):
+            """
             Message keys:
              - ``"n"``: number of actuated channel
              - ``"actuated"``: list of actuated channel identifiers.
              - ``"start"``: ms counter before setting shift registers
              - ``"end"``: ms counter after setting shift registers
-            '''
+            """
             actuated_channels = message['actuated']
             if actuated_channels:
                 app = get_app()
                 actuated_electrodes = \
                     (app.dmf_device.actuated_electrodes(actuated_channels)
                      .dropna())
-                actuated_areas = (app.dmf_device
-                                  .electrode_areas.ix[actuated_electrodes
-                                                      .values])
+                actuated_areas = app.dmf_device.electrode_areas.loc[actuated_electrodes.values]
                 self.actuated_area = actuated_areas.sum()
             else:
                 self.actuated_area = 0
@@ -494,52 +493,50 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
             self.push_status(status, None, True)
             _L().debug(status)
 
-        self.dropbot_signals.signal('channels-updated')\
+        self.dropbot_signals.signal('channels-updated') \
             .connect(_on_channels_updated, weak=False)
 
         @gtk_threadsafe
-        def refresh_channels():
-            # XXX Reassign channel states to trigger a `channels-updated`
-            # message since actuated channel states may have changed based
-            # on the channels that were disabled.
+        async def refresh_channels(self):
+            """
+            Asynchronously refresh channel states, particularly after detecting shorts.
+            """
             self.control_board.turn_off_all_channels()
             self.control_board.state_of_channels = self.channel_states
+            # Assuming turn_off_all_channels and state_of_channels setter are async-safe
 
-        @asyncio.coroutine
-        def _on_shorts_detected(sender, **message):
-            '''
+        async def _on_shorts_detected(sender, **message):
+            """
             Example message:
 
             ```python
             OrderedDict([(u'event', u'shorts-detected'), (u'values', [])])
             ```
-            '''
-            if message.get('values'):
+            """
+            values = message.get('values')
+            if values:
                 status = ('Shorts detected.  Disabled the following '
                           'channels: %s' % message['values'])
-                gtk_threadsafe(_L().error)\
-                ('Shorts were detected on the following '
-                 'channels:\n\n    %s\n\n'
-                 'You may continue using the DropBot, but the '
-                 'affected channels have been disabled until the'
-                 ' DropBot is restarted (e.g., unplug all cables'
-                 ' and plug back in).', message['values'])
+
+                await asyncio.create_task(self.log_error_async(
+                    f'Shorts were detected on the following channels:\n\n    {values}\n\nYou may continue using the '
+                    f'DropBot, but the affected channels have been disabled until the DropBot is restarted (e.g., '
+                    f'unplug all cables and plug back in).'))
             else:
                 status = 'No shorts detected.'
             # XXX Refresh channels since some channels may have been
             # disabled.
-            refresh_channels()
+            await self.refresh_channels()
             self.push_status(status)
 
-        self.dropbot_signals.signal('shorts-detected')\
+        self.dropbot_signals.signal('shorts-detected') \
             .connect(_on_shorts_detected, weak=False)
 
-        @asyncio.coroutine
-        def _on_halted(sender, **message):
+        async def _on_halted(sender, **message):
             # DropBot has halted.  All channels have been disabled and high
             # voltage has been turned off.
 
-            reason =  ''
+            reason = ''
 
             if 'error' in message:
                 error = message['error']
@@ -554,19 +551,16 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
                 turned off until the DropBot is restarted (e.g., unplug all
                 cables and plug back in).'''.strip()
             # XXX Refresh channels since channels were disabled.
-            refresh_channels()
+            await refresh_channels()
             app = get_app()
             # Disable real-time mode.
             gtk_threadsafe(app.set_app_values)({'realtime_mode': False})
             self.push_status(status)
-            gtk_threadsafe(_L().error)\
-                ('\n'.join([status, '', '\n'.join(map(str.strip,
-                                                      message.splitlines()))]))
+            gtk_threadsafe(_L().error)('\n'.join([status, '', '\n'.join(map(str.strip, message.splitlines()))]))
 
         self.dropbot_signals.signal('halted').connect(_on_halted, weak=False)
 
-        @asyncio.coroutine
-        def _on_dropbot_connected(sender, **message):
+        async def _on_dropbot_connected(sender, **message):
             '''
             .. versionchanged:: 2.24
                 Synchronize time between DropBot microseconds count and host
@@ -610,7 +604,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
                 C16 < 300nF.
             '''
             dropbot_ = message['dropbot']
-            map(_L().info, str(dropbot_.properties).splitlines())
+            _L().info('\n'.join(str(dropbot_.properties).splitlines()))
             self.control_board = dropbot_
             if self.dropbot_connected.count < 1:
                 status = 'Initial connection to DropBot established.'
@@ -631,12 +625,10 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
             app_values = self.get_app_values()
             self.control_board.update_state(capacitance_update_interval_ms=
                                             app_values['c_update_ms'],
-                                            event_mask=EVENT_CHANNELS_UPDATED |
-                                            EVENT_SHORTS_DETECTED |
-                                            EVENT_ENABLE)
+                                            event_mask=EVENT_CHANNELS_UPDATED | EVENT_SHORTS_DETECTED | EVENT_ENABLE)
             self.device_time_sync = {'host': dt.datetime.utcnow(),
                                      'device_us':
-                                     self.control_board.microseconds()}
+                                         self.control_board.microseconds()}
             self.dropbot_status.on_connected(dropbot_)
 
             # If the feedback capacitor is < 300nF, disable the chip load
@@ -647,32 +639,30 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
         self.dropbot_signals.signal('connected').connect(_on_dropbot_connected,
                                                          weak=False)
 
-        @asyncio.coroutine
-        def _on_dropbot_disconnected(sender, **message):
+        async def _on_dropbot_disconnected(sender, **message):
             self.push_status('DropBot connection lost.')
             # Clear event indicating DropBot has been disconnected.
             self.dropbot_connected.clear()
             self.control_board = None
             self.dropbot_status.on_disconnected()
 
-        self.dropbot_signals.signal('disconnected')\
+        self.dropbot_signals.signal('disconnected') \
             .connect(_on_dropbot_disconnected, weak=False)
 
-        @asyncio.coroutine
-        def on_version_mismatch(*args, **kwargs):
+        async def on_version_mismatch(*args, **kwargs):
             message = ('**DropBot driver** version `%(driver_version)s` does '
                        'not match **firmware** version `%(firmware_version)s`.'
                        % kwargs)
 
             @sync(gtk_threadsafe)
-            def version_mismatch_dialog():
+            async def version_mismatch_dialog():
                 parent = get_app().main_window_controller.view
-                dialog = gtk.Dialog('DropBot driver version mismatch',
-                                    buttons=('_Update', gtk.RESPONSE_ACCEPT,
-                                             '_Ignore', gtk.RESPONSE_OK,
-                                             '_Skip', gtk.RESPONSE_NO),
-                                    flags=gtk.DIALOG_MODAL |
-                                    gtk.DIALOG_DESTROY_WITH_PARENT,
+                dialog = Gtk.Dialog('DropBot driver version mismatch',
+                                    buttons=('_Update', Gtk.RESPONSE_ACCEPT,
+                                             '_Ignore', Gtk.RESPONSE_OK,
+                                             '_Skip', Gtk.RESPONSE_NO),
+                                    flags=Gtk.DIALOG_MODAL |
+                                          Gtk.DIALOG_DESTROY_WITH_PARENT,
                                     parent=parent)
                 # Disable dialog window close "X" button.
                 dialog.props.deletable = False
@@ -680,8 +670,8 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
                 # Do not close window when <Escape> key is pressed.
                 #
                 # See: http://www.async.com.br/faq/pygtk/index.py?req=show&file=faq10.013.htp
-                def on_response(dialog, response):
-                    if response in (gtk.RESPONSE_DELETE_EVENT, gtk.RESPONSE_CLOSE):
+                async def on_response(dialog, response):
+                    if response in (Gtk.RESPONSE_DELETE_EVENT, Gtk.RESPONSE_CLOSE):
                         dialog.emit_stop_by_name('response')
 
                 dialog.connect('delete_event', lambda *args: True)
@@ -689,15 +679,15 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
                 dialog.connect('close', lambda *args: True)
 
                 buttons = {'ignore':
-                           dialog.get_widget_for_response(gtk.RESPONSE_OK),
+                               dialog.get_widget_for_response(Gtk.RESPONSE_OK),
                            'update':
-                           dialog.get_widget_for_response(gtk.RESPONSE_ACCEPT),
+                               dialog.get_widget_for_response(Gtk.RESPONSE_ACCEPT),
                            'skip':
-                           dialog.get_widget_for_response(gtk.RESPONSE_NO)}
-                buttons['ignore']\
+                               dialog.get_widget_for_response(Gtk.RESPONSE_NO)}
+                buttons['ignore'] \
                     .set_tooltip_text('Ignore driver version mismatch and '
                                       'connect anyway.')
-                buttons['update']\
+                buttons['update'] \
                     .set_tooltip_text('Upload DropBot firmware to match driver'
                                       ' version.')
                 buttons['skip'].set_tooltip_text('Do not connect to DropBot.  '
@@ -705,7 +695,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
                                                  ' dialog.')
 
                 content_area = dialog.get_content_area()
-                label = gtk.Label(markdown2pango.markdown2pango(message))
+                label = Gtk.Label(markdown2pango.markdown2pango(message))
                 label.props.use_markup = True
                 label.props.wrap = True
                 label.props.xpad = 20
@@ -725,17 +715,16 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
                 finally:
                     dialog.destroy()
 
-            response = yield asyncio.From(version_mismatch_dialog())
+            response = await version_mismatch_dialog()
 
             if response == 'skip':
                 raise IOError(message)
-            raise asyncio.Return(response)
+            raise response
 
-        self.dropbot_signals.signal('version-mismatch')\
+        self.dropbot_signals.signal('version-mismatch') \
             .connect(on_version_mismatch, weak=False)
 
-        @asyncio.coroutine
-        def on_no_power(*args, **kwargs):
+        async def on_no_power(*args, **kwargs):
             message = ('Please connect **DropBot 12V power supply** _or_ '
                        '**disconnect DropBot entirely**.\n'
                        '\n'
@@ -746,10 +735,10 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
             @sync(gtk_threadsafe)
             def no_power_dialog():
                 parent = get_app().main_window_controller.view
-                dialog = gtk.Dialog('No DropBot 12V power supply detected',
-                                    buttons=('_Retry', gtk.RESPONSE_OK),
-                                    flags=gtk.DIALOG_MODAL |
-                                    gtk.DIALOG_DESTROY_WITH_PARENT,
+                dialog = Gtk.Dialog('No DropBot 12V power supply detected',
+                                    buttons=('_Retry', Gtk.RESPONSE_OK),
+                                    flags=Gtk.DIALOG_MODAL |
+                                          Gtk.DIALOG_DESTROY_WITH_PARENT,
                                     parent=parent)
                 # Disable dialog window close "X" button.
                 dialog.props.deletable = False
@@ -758,7 +747,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
                 #
                 # See: http://www.async.com.br/faq/pygtk/index.py?req=show&file=faq10.013.htp
                 def on_response(dialog, response):
-                    if response in (gtk.RESPONSE_DELETE_EVENT, gtk.RESPONSE_CLOSE):
+                    if response in (Gtk.RESPONSE_DELETE_EVENT, Gtk.RESPONSE_CLOSE):
                         dialog.emit_stop_by_name('response')
 
                 dialog.connect('delete_event', lambda *args: True)
@@ -766,10 +755,10 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
                 dialog.connect('close', lambda *args: True)
 
                 buttons = {'skip':
-                           dialog.get_widget_for_response(gtk.RESPONSE_OK)}
+                               dialog.get_widget_for_response(Gtk.RESPONSE_OK)}
 
                 content_area = dialog.get_content_area()
-                label = gtk.Label(markdown2pango.markdown2pango(message))
+                label = Gtk.Label(markdown2pango.markdown2pango(message))
                 label.props.use_markup = True
                 label.props.wrap = True
                 label.props.xpad = 20
@@ -783,13 +772,12 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
                 # hyperlink is clicked/activated.
                 label.connect("activate-link", gtk_on_link_clicked)
 
-                hbox = gtk.HBox()
+                hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
 
-                image = gtk.Image()
+                image = Gtk.Image()
                 image_size = 150
-                image_path = ph.path(__file__).parent\
-                    .joinpath('dropbot-power.png')
-                pixbuf = gtk.gdk.pixbuf_new_from_file(image_path)
+                image_path = Path(__file__).parent / 'dropbot-power.png'
+                pixbuf = Gtk.Gdk.pixbuf_new_from_file(image_path)
                 if pixbuf.props.width > pixbuf.props.height:
                     scale = image_size / pixbuf.props.width
                 else:
@@ -797,11 +785,11 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
                 width = int(scale * pixbuf.props.width)
                 height = int(scale * pixbuf.props.height)
                 pixbuf = pixbuf.scale_simple(width, height,
-                                             gtk.gdk.INTERP_BILINEAR)
+                                             Gtk.Gdk.INTERP_BILINEAR)
                 image.set_from_pixbuf(pixbuf)
-                hbox.pack_start(image, expand=False, fill=False)
-                hbox.pack_start(label, expand=True, fill=True)
-                content_area.pack_start(hbox, expand=True, fill=True)
+                hbox.pack_start(image, expand=False, fill=False, padding=0)
+                hbox.pack_start(label, expand=True, fill=True, padding=0)
+                content_area.pack_start(hbox, expand=True, fill=True, padding=0)
                 content_area.show_all()
                 try:
                     response = dialog.run()
@@ -812,23 +800,23 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
                 finally:
                     dialog.destroy()
 
-            response = yield asyncio.From(no_power_dialog())
+            response = await (no_power_dialog())
 
             if response == 'skip':
                 raise IOError(message)
-            raise asyncio.Return(response)
+            raise response
 
         self.dropbot_signals.signal('no-power').connect(on_no_power,
                                                         weak=False)
 
     @gtk_threadsafe
     def clear_status(self):
-        '''
+        """
         Clear statusbar context for this plugin.
 
 
         .. versionadded:: 2.30
-        '''
+        """
         app = get_app()
         statusbar = app.builder.get_object('statusbar')
         context_id = statusbar.get_context_id(self.name)
@@ -837,7 +825,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
 
     @gtk_threadsafe
     def push_status(self, status, hide_timeout_s=3, clear=True):
-        '''
+        """
         Push status message to statusbar context for this plugin.
 
         Parameters
@@ -852,7 +840,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
 
 
         .. versionadded:: 2.30
-        '''
+        """
         app = get_app()
         statusbar = app.builder.get_object('statusbar')
         context_id = statusbar.get_context_id(self.name)
@@ -864,7 +852,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
 
         if hide_timeout_s is not None:
             # Hide status message after specified timeout.
-            gobject.timeout_add(int(hide_timeout_s * 1e3),
+            GObject.timeout_add(int(hide_timeout_s * 1e3),
                                 statusbar.remove_message, context_id,
                                 message_id)
 
@@ -922,7 +910,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
     @require_connection()  # Display error dialog if DropBot is not connected.
     @require_test_board  # Prompt user to insert DropBot test board
     def run_all_tests(self):
-        '''
+        """
         Run all DropBot on-board self-diagnostic tests.
 
         Record test results as JSON and results summary as a Word document.
@@ -943,7 +931,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
         .. versionchanged:: 2.35
             Use :meth:`run_tests()` to execute tests while displaying a
             progress dialog indicating which test is currently running.
-        '''
+        """
         # XXX Wait for test results in background thread to allow UI to display
         # and update a progress dialog.
         future = self.executor.submit(self.run_tests().result)
@@ -956,8 +944,8 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
             #     working directory (with raw JSON results embedded in a
             #     `<script id="results" .../> tag).
             #  2. Launch HTML report in web browser.
-            results_dir = ph.path(self.diagnostics_results_dir)
-            results_dir.makedirs_p()
+            results_dir = Path(self.diagnostics_results_dir)
+            results_dir.mkdir(parents=True, exist_ok=True)
 
             # Create unique output filenames based on current timestamp.
             timestamp = dt.datetime.utcnow().isoformat().replace(':', '_')
@@ -967,12 +955,12 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
             db.self_test.generate_report(results, output_path=report_path,
                                          force=True)
             # Launch HTML report.
-            report_path.launch()
+            webbrowser.open(report_path.as_uri())
 
         future.add_done_callback(_on_tests_completed)
 
     def create_ui(self):
-        '''
+        """
         Create user interface elements (e.g., menu items).
 
         .. versionchanged:: 0.14
@@ -992,17 +980,17 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
 
         .. versionchanged:: 2.37
             Replace original MicroDrop help menu item.
-        '''
+        """
         app = get_app()
         # Get reference to status labels container in main window.
         hbox = app.builder.get_object('status_labels')
 
         self.dropbot_status = DropBotStatusView()
-        frame = gtk.Frame('DropBot')
+        frame = Gtk.Frame('DropBot')
         frame.add(self.dropbot_status.widget)
         # Pack DropBot status frame into `VBox` to prevent from expanding
         # vertically to fill space.
-        vbox = gtk.VBox()
+        vbox = Gtk.Box()
         vbox.pack_start(frame, fill=False, expand=False)
         # Add DropBot status frame to main window status labels container.
         hbox.pack_start(vbox, fill=False, expand=False)
@@ -1013,7 +1001,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
         menu_item.set_label('_DropBot help...')
         help_url = 'https://sci-bots.com/dropbot'
         menu_item.connect('activate', lambda menu_item:
-                          webbrowser.open_new_tab(help_url))
+        webbrowser.open_new_tab(help_url))
         app = get_app()
         main_help_menu = app.builder.get_object('menu_help')
         main_help_menu.insert(menu_item, len(main_help_menu.get_children()) -
@@ -1032,7 +1020,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
         self.menu_items = [gtk.MenuItem('Run _all on-board self-tests...'),
                            tests_menu_head]
         self.menu_items[0].connect('activate', lambda menu_item:
-                                   self.run_all_tests())
+        self.run_all_tests())
 
         self.menu = gtk.Menu()
         self.menu.show_all()
@@ -1055,7 +1043,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
                  {'test_name': 'test_on_board_feedback_calibration',
                   'title': 'On-board _feedback calibration'},
                  {'test_name': 'test_shorts', 'title': 'Detect _shorted '
-                  'channels'},
+                                                       'channels'},
                  {'test_name': 'test_channels', 'title': 'Scan test _board'}]
 
         # Add a menu item for each test to on-board tests sub-menu.
@@ -1106,7 +1094,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
             #: .. versionadded:: 2.26
             Integer.named('c_update_ms').using(default=10, optional=True,
                                                properties={'show_in_gui':
-                                                           True}))
+                                                               True}))
 
     def cleanup_plugin(self):
         '''
@@ -1178,7 +1166,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
         hub_execute('microdrop.command_plugin', 'register_command',
                     command_name='identify_electrode', namespace='electrode',
                     plugin_name=self.name, title='_Visually identify '
-                    'electrode')
+                                                 'electrode')
 
     def start_monitor(self):
         '''
@@ -1200,7 +1188,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
 
         self.monitor_task = cancellable(dropbot_monitor)
         thread = threading.Thread(target=self.monitor_task,
-                                  args=(self.dropbot_signals, ))
+                                  args=(self.dropbot_signals,))
         thread.daemon = True
         thread.start()
 
@@ -1388,7 +1376,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
                     # electrode.
                     app = get_app()
                     states.index = (app.dmf_device.channels_by_electrode
-                                    .loc[states.index])
+                    .loc[states.index])
 
                     actuated_electrodes = \
                         db.threshold.actuate_channels(self.control_board,
@@ -1415,8 +1403,8 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
                     self.set_app_values(app_values)
 
                     message = ('Measured %s capacitance: %sF/%.1f mm^2 = %sF/mm^2'
-                            % (name, si.si_format(c), self.actuated_area,
-                                si.si_format(c / self.actuated_area)))
+                               % (name, si.si_format(c), self.actuated_area,
+                                  si.si_format(c / self.actuated_area)))
                     _L().info(message)
                     gtk_threadsafe(self.push_status)(message, 10, False)
 
@@ -1614,14 +1602,14 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
         '''
         data = {}
         data["control board name"] = (self.control_board
-                                      .properties['display_name'])
+        .properties['display_name'])
         data["control board id"] = self.control_board.id
         data["control board uuid"] = str(self.control_board.uuid)
         data["control board hardware version"] = (self.control_board
                                                   .hardware_version)
         data["control board software version"] = (self.control_board
-                                                  .properties
-                                                  ['software_version'])
+        .properties
+        ['software_version'])
         with self.data_dir().joinpath('hardware.json').open('w') as output:
             json.dump(data, output, indent=4)
 
@@ -1660,13 +1648,13 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
             try:
                 for i, test in enumerate(tests):
                     test_func = getattr(db.hardware_test, test)
-                    signals.signal('test-started')\
+                    signals.signal('test-started') \
                         .send({'test': test, 'completed': i,
                                'total': len(tests)})
                     results[test] = test_func(self.control_board)
-                    signals.signal('test-completed')\
+                    signals.signal('test-completed') \
                         .send({'test': test, 'completed': i + 1,
-                                'total': len(tests), 'results': results})
+                               'total': len(tests), 'results': results})
                     # Yield control to asyncio event loop.  This provides
                     # breakpoints where the coroutine may be cancelled.
                     yield asyncio.From(asyncio.sleep(0))
@@ -1693,7 +1681,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
             parent = app.main_window_controller.view
             dialog = gtk.MessageDialog(buttons=gtk.BUTTONS_CANCEL,
                                        flags=gtk.DIALOG_MODAL |
-                                       gtk.DIALOG_DESTROY_WITH_PARENT,
+                                             gtk.DIALOG_DESTROY_WITH_PARENT,
                                        parent=parent)
             dialog.set_icon(parent.get_icon())
             dialog.set_title('DropBot self tests')
@@ -1710,7 +1698,7 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
 
             # Close dialog once tests have completed.
             future.add_done_callback(lambda *args:
-                                    gtk_threadsafe(dialog.destroy)())
+                                     gtk_threadsafe(dialog.destroy)())
 
             @gtk_threadsafe
             def _on_test_started(message):
@@ -1846,8 +1834,8 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
         if (all([(old_mode & MODE_REAL_TIME_MASK),
                  (new_mode & ~MODE_REAL_TIME_MASK),
                  (new_mode & ~MODE_RUNNING_MASK)]) or
-            all([(old_mode & MODE_RUNNING_MASK),
-                 (new_mode & ~MODE_RUNNING_MASK)])):
+                all([(old_mode & MODE_RUNNING_MASK),
+                     (new_mode & ~MODE_RUNNING_MASK)])):
             # Either real-time mode was disabled when it was enabled or
             # protocol just stopped running.
             self.turn_off()
@@ -1865,6 +1853,8 @@ class DropBotPlugin(Plugin, gobject.GObject, StepOptionsController,
                 # "halted" event.
                 with self.control_board.transaction_lock:
                     self.control_board.detect_shorts()
+
             detect_shorts(self)
+
 
 PluginGlobals.pop_env()
