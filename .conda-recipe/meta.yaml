@@ -6,7 +6,7 @@
 # source will be downloaded prior to filling in jinja templates
 # Example assumes that this folder has setup.py in it
 source:
-  git_url: ../
+  path: ..
 
 package:
   name: microdrop.dropbot-plugin
@@ -19,19 +19,16 @@ build:
 requirements:
   build:
     - conda-helpers >=0.4
-
     - debounce >=0.3
-
     - dropbot >=1.73.4
-    - flatland-fork
     - json-tricks >=3.8.0
-
     - logging-helpers >=0.4
-
-    - microdrop >=2.35
     - microdrop-plugin-template
     - microdrop-plugin-manager >=0.14
-    - microdrop-utility
+
+     #TODO: we just packaged them quickly: they are alpha versions, need to take care of them
+    - microdrop_helpers # this is actually microdrop, we have to fix it
+    - microdrop_ext_libs
 
     - or-event
     - pandas
@@ -39,14 +36,8 @@ requirements:
     - pip-helpers
     - pytables
     - pyyaml
-
     - semantic_version
-
     - si-prefix
-
-    - trollius
-
-    - wheeler.pygtkhelpers >=0.19
     - zmq-plugin
 
   run:
