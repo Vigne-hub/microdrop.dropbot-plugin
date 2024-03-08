@@ -91,7 +91,7 @@ warnings.simplefilter('ignore', tables.NaturalNameWarning)
 PluginGlobals.push_env('microdrop.managed')
 
 
-def Gtk_on_link_clicked(widget, uri):
+def gtk_on_link_clicked(widget, uri):
     '''
     .. versionadded:: 2.38.1
 
@@ -304,8 +304,9 @@ def require_test_board(func):
         image_paths = sorted(images_dir.glob('insert_test_board-*.jpg'))
 
         # Assuming `animation_dialog` is a previously defined function that creates a dialog with animations
-        # and `Gtk_on_link_clicked` is a callback function for when the hyperlink is clicked.
-        dialog = animation_dialog(image_paths, loop=True, buttons=Gtk.ButtonsType.OK_CANCEL)
+        # and `gtk_on_link_clicked` is a callback function for when the hyperlink is clicked.
+        dialog = animation_dialog(image_paths, loop=True,
+                                  buttons=Gtk.ButtonsType.OK_CANCEL)
         dialog.set_markup('<b>Please insert the DropBot test board</b>\n\n'
                           'For more info, see '
                           '<a href="https://github.com/sci-bots/dropbot-v3/wiki/DropBot-Test-Board#loading-dropbot-test-board">'
@@ -679,7 +680,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
 
                 # Do not close window when <Escape> key is pressed.
                 #
-                # See: http://www.async.com.br/faq/pyGtk/index.py?req=show&file=faq10.013.htp
+                # See: http://www.async.com.br/faq/pygtk/index.py?req=show&file=faq10.013.htp
                 async def on_response(dialog, response):
                     if response in (Gtk.RESPONSE_DELETE_EVENT, Gtk.RESPONSE_CLOSE):
                         dialog.emit_stop_by_name('response')
@@ -755,7 +756,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
 
                 # Do not close window when <Escape> key is pressed.
                 #
-                # See: http://www.async.com.br/faq/pyGtk/index.py?req=show&file=faq10.013.htp
+                # See: http://www.async.com.br/faq/pygtk/index.py?req=show&file=faq10.013.htp
                 def on_response(dialog, response):
                     if response in (Gtk.RESPONSE_DELETE_EVENT, Gtk.RESPONSE_CLOSE):
                         dialog.emit_stop_by_name('response')
@@ -780,7 +781,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
 
                 # Use `activate-link` callback to manually handle action when
                 # hyperlink is clicked/activated.
-                label.connect("activate-link", Gtk_on_link_clicked)
+                label.connect("activate-link", gtk_on_link_clicked)
 
                 hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
 
@@ -1000,10 +1001,10 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
         frame.add(self.dropbot_status.widget)
         # Pack DropBot status frame into `VBox` to prevent from expanding
         # vertically to fill space.
-        vbox = Gtk.Box()
-        vbox.pack_start(frame, fill=False, expand=False)
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        vbox.pack_start(frame, fill=False, expand=False, spacing=0)
         # Add DropBot status frame to main window status labels container.
-        hbox.pack_start(vbox, fill=False, expand=False)
+        hbox.pack_start(vbox, fill=False, expand=False, spacing=0)
         vbox.show_all()
 
         # Add DropBot help entry to main window `Help` menu.
@@ -1189,10 +1190,9 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
             self.control_board = None
             self.dropbot_connected.clear()
 
-        @asyncio.coroutine
-        def dropbot_monitor(*args):
+        async def dropbot_monitor(*args):
             try:
-                yield asyncio.From(db.monitor.monitor(*args))
+                await (db.monitor.monitor(*args))
             except asyncio.CancelledError:
                 _L().info('Stopped DropBot monitor.')
 
@@ -1408,13 +1408,13 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
                     # Measure absolute capacitance and compute _specific_
                     # capacitance (i.e., capacitance per mm^2).
                     c = self.control_board.measure_capacitance()
-                    app_values = {}
-                    app_values['c_%s' % name] = c / self.actuated_area
+                    app_values = {'c_%s' % name: c / self.actuated_area}
                     self.set_app_values(app_values)
 
-                    message = ('Measured %s capacitance: %sF/%.1f mm^2 = %sF/mm^2'
-                               % (name, si.si_format(c), self.actuated_area,
-                                  si.si_format(c / self.actuated_area)))
+                    message = (
+                            'Measured %s capacitance: %sF/%.1f mm^2 = %sF/mm^2'
+                            % (name, si.si_format(c), self.actuated_area,
+                               si.si_format(c / self.actuated_area)))
                     _L().info(message)
                     gtk_threadsafe(self.push_status)(message, 10, False)
 
@@ -1430,38 +1430,37 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
                     self.control_board.state_of_channels = channel_states
 
     def on_measure_liquid_capacitance(self):
-        '''
+        """
         .. versionadded:: 0.18
-        '''
+        """
         self._calibrate_device_capacitance('liquid')
 
     def on_measure_filler_capacitance(self):
-        '''
+        """
         .. versionadded:: 0.18
-        '''
+        """
         self._calibrate_device_capacitance('filler')
 
     def log_capacitance_updates(self, capacitance_updates):
-        '''
-        .. versionadded:: 2.24
+        """
+        . versionadded:: 2.24
 
         Append the specified capacitance update messages to a GZip-compressed
         CSV table in the current experiment log directory.
 
         Parameters
         ----------
-        capacitance_updates : list
-            List of ``"capacitance-updated"`` event messages.
+        capacitance_updates : list of ``"capacitance-updated"`` event messages.
 
 
-        .. versionchanged:: 2.25
+        . versionchanged:: 2.25
             Use actuated channels lists and actuated areas from capacitance
             updates.
 
-        .. versionchanged:: 2.26
+        . versionchanged:: 2.26
             Remove ``sampling_rate_hz`` column.  Move ``capacitance`` column to
             index 1 (adjacent to ``timestamp_utc`` column).
-        '''
+        """
         logger = _L()  # use logger with method context
         app = get_app()
 
@@ -1494,13 +1493,12 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
             # See [here][1] for some supporting motivation.
             #
             # [1]: https://github.com/gruntjs/grunt-contrib-compress/issues/116#issuecomment-70883022
-            with gzip.open(csv_output_path, 'a', compresslevel=1) as output:
+            with gzip.open(csv_output_path, 'at', compresslevel=1) as output:
                 df.to_csv(output, index=False, header=include_header)
         logger.info('logged %s capacitance updates to `%s`', df.shape[0],
                     csv_output_path)
 
-    @asyncio.coroutine
-    def on_step_run(self, plugin_kwargs, signals):
+    async def on_step_run(self, plugin_kwargs, signals):
         '''
         .. versionadded:: 2.37
 
@@ -1541,8 +1539,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
         if app_values['c_liquid'] > 0:
             plugin_kwargs[self.name]['c_unit_area'] = app_values['c_liquid']
 
-        @asyncio.coroutine
-        def actuation_watcher(sender, **kwargs):
+        async def actuation_watcher(sender, **kwargs):
             if kwargs.get('capacitance_messages'):
                 # Log capacitance update messages collected during actuation.
                 # Notify volume threshold was reached through statusbar.
@@ -1572,9 +1569,9 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
         signals.signal('actuation-completed').connect(actuation_watcher,
                                                       weak=False)
 
-        result = yield asyncio.From(execute(proxy, dmf_device, plugin_kwargs,
-                                            signals))
-        raise asyncio.Return(result)
+        result = await execute(proxy, dmf_device, plugin_kwargs,
+                               signals)
+        raise result
 
     @require_connection(log_level='info')  # Log if DropBot is not connected.
     def set_voltage(self, voltage):
@@ -1585,7 +1582,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
             voltage : RMS voltage
 
 
-        .. versionchanged:: 2.33
+        . versionchanged:: 2.33
             Ensure high-voltage output is turned on and enabled.
         """
         _L().debug("%.1f", voltage)
@@ -1605,21 +1602,19 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
 
     @require_connection(log_level='info')  # Log if DropBot is not connected.
     def on_protocol_finished(self):
-        '''
-        .. versionadded:: 2.38.5
+        """
+        . versionadded:: 2.38.5
             Write the name, hardware version, id, and firmware version of the
             control board to the experiment log.
-        '''
-        data = {}
-        data["control board name"] = (self.control_board
-        .properties['display_name'])
-        data["control board id"] = self.control_board.id
-        data["control board uuid"] = str(self.control_board.uuid)
-        data["control board hardware version"] = (self.control_board
-                                                  .hardware_version)
-        data["control board software version"] = (self.control_board
-        .properties
-        ['software_version'])
+        """
+        data = {"control board name": (self.control_board
+        .properties['display_name']), "control board id": self.control_board.id,
+                "control board uuid": str(self.control_board.uuid),
+                "control board hardware version": (self.control_board
+                                                   .hardware_version),
+                "control board software version": (self.control_board
+                .properties
+                ['software_version'])}
         with self.data_dir().joinpath('hardware.json').open('w') as output:
             json.dump(data, output, indent=4)
 
@@ -1651,8 +1646,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
 
         signals = blinker.Namespace()
 
-        @asyncio.coroutine
-        def _run_tests():
+        async def _run_tests():
             results = {}
 
             try:
@@ -1667,7 +1661,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
                                'total': len(tests), 'results': results})
                     # Yield control to asyncio event loop.  This provides
                     # breakpoints where the coroutine may be cancelled.
-                    yield asyncio.From(asyncio.sleep(0))
+                    await (asyncio.sleep(0))
             except asyncio.CancelledError:
                 # Gracefully exit if task is cancelled, returning results of
                 # completed tests.
@@ -1678,8 +1672,8 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
                     db.hardware_test.log_results(results,
                                                  self.diagnostics_results_dir)
                     _L().info('Logged results to: `%s`',
-                              self.diagnostics_results_dir.realpath())
-            raise asyncio.Return(results)
+                              self.diagnostics_results_dir.resolve())
+            raise results
 
         task = cancellable(_run_tests)
         # Write capacitance updates to log in background thread.
@@ -1702,7 +1696,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
             dialog.props.deletable = False
             content_area = dialog.get_content_area()
             progress = Gtk.ProgressBar()
-            content_area.pack_start(progress, fill=True, expand=True, padding=5)
+            content_area.pack_start(progress, fill=True, expand=True, padding=5, spacing=0)
             content_area.show_all()
             cancel_button = dialog.get_action_area().get_children()[0]
 
@@ -1824,7 +1818,8 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
         Pulse each neighbour electrode to help visually identify an electrode.
         '''
         app = get_app()
-        neighbours = app.dmf_device.electrode_neighbours.loc[electrode_id].dropna()
+        neighbours = app.dmf_device.electrode_neighbours.loc[
+            electrode_id].dropna()
         neighbour_channels = \
             app.dmf_device.channels_by_electrode.loc[neighbours]
 
