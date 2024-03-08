@@ -6,11 +6,13 @@ import logging
 from logging_helpers import _L
 from markdown2pango import markdown2pango
 from pygtkhelpers.gthreads import gtk_threadsafe
-import gtk
+import gi
+
+gi.require_version('Gtk', "3.0")
+from gi.repository import Gtk as gtk
 import path_helpers as ph
 import pygtkhelpers as pgh
 import si_prefix as si
-
 
 PLUGIN_PATH = ph.path(__file__).parent.realpath()
 CHIP_INSERTED_IMAGE_PATH = PLUGIN_PATH.joinpath('dropbot-chip-inserted.png')
@@ -19,24 +21,24 @@ CHIP_REMOVED_IMAGE_PATH = PLUGIN_PATH.joinpath('dropbot.png')
 
 class DropBotStatusView(pgh.delegates.SlaveView):
     def create_ui(self):
-        hbox = gtk.HBox()
+        hbox = gtk.Box(orientation=gtk.Orientation.HORIZONTAL)
 
         image = gtk.Image()
         image.props.xpad = 10
         image.props.ypad = 0
         event_box = gtk.EventBox()
         event_box.add(image)
-        hbox.pack_start(event_box, fill=False, expand=False)
+        hbox.pack_start(event_box, fill=False, expand=False, spacing=0)
 
         properties = OrderedDict([('Voltage', 'Root mean square **actuation '
-                                   'voltage**.'),
+                                              'voltage**.'),
                                   ('Capacitance', '**Load capacitance** of '
-                                   'actuated channels.'),
+                                                  'actuated channels.'),
                                   ('c<sub>device</sub>',
                                    '**Capacitance per unit area** for '
                                    'electrodes covered by liquid.'),
                                   ('Force', '**Force applied** to liquid on '
-                                   'actuated electrodes.')])
+                                            'actuated electrodes.')])
         table = gtk.Table(rows=len(properties), columns=2)
         for i, (name_i, description_i) in enumerate(properties.items()):
             name_label_i = gtk.Label(markdown2pango('**%s:**' %
@@ -53,7 +55,7 @@ class DropBotStatusView(pgh.delegates.SlaveView):
             table.attach(name_label_i, 0, 1, i, i + 1, xpadding=5)
             table.attach(value_label_i, 1, 2, i, i + 1, xpadding=5)
 
-        hbox.pack_start(table, fill=False, expand=False)
+        hbox.pack_start(table, fill=False, expand=False, spacing=0)
         hbox.show_all()
 
         self.widget.add(hbox)
@@ -114,7 +116,7 @@ class DropBotStatusView(pgh.delegates.SlaveView):
                        'properties': {'Firmware': properties.software_version,
                                       'UUID': dropbot.uuid,
                                       'Number of channels':
-                                      dropbot.number_of_channels}}
+                                          dropbot.number_of_channels}}
         self.event_box.modify_bg(gtk.STATE_NORMAL,
                                  # Medium yellow.
                                  gtk.gdk.color_parse('#decf3f'))
@@ -130,7 +132,7 @@ class DropBotStatusView(pgh.delegates.SlaveView):
                       if value else CHIP_REMOVED_IMAGE_PATH)
         medium_yellow = gtk.gdk.color_parse('#decf3f')
         medium_green = gtk.gdk.color_parse('#60bd68')
-        color =  medium_green if value else medium_yellow
+        color = medium_green if value else medium_yellow
         self._set_image(ph.path(__file__).parent
                         .joinpath(image_name))
         self.event_box.modify_bg(gtk.STATE_NORMAL, color)
