@@ -48,7 +48,9 @@ from logging_helpers import _L  # Adjust import based on actual module location
 # If using specific plugins or interfaces from your application framework
 # These will need to be adjusted based on the actual structure of your project
 from microdrop.app_context import get_app, get_hub_uri
-from microdrop.plugin_manager import (Plugin, implements, PluginGlobals)
+
+from pyutilib.component.core import Plugin, SingletonPlugin, implements, ExtensionPoint, PluginGlobals
+
 from microdrop.plugin_helpers import (StepOptionsController, AppDataController, hub_execute)
 from microdrop.interfaces import (IApplicationMode, IElectrodeActuator,
                                   IPlugin, IWaveformGenerator)
