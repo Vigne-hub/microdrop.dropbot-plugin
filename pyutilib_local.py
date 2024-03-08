@@ -1,4 +1,5 @@
 import asyncio
+import gzip
 import logging
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
@@ -10,8 +11,10 @@ import webbrowser
 import zlib
 from functools import wraps
 
+from matplotlib.backends.backend_template import FigureCanvas
+from microdrop.plugin_manager import emit_signal, get_service_instance_by_name, ScheduleRequest
 from past.builtins import unicode
-from pygtkhelpers.gthreads import gtk_threadsafe
+
 from asyncio_helpers import cancellable, sync
 from pathlib import Path
 
@@ -28,11 +31,14 @@ import pandas as pd
 # Ensure zmq.asyncio is installed or available in your environment
 import zmq.asyncio as zmq
 
-# Matplotlib with GTK3 backend
+# Matplotlib with Gtk3 backend
 import matplotlib
+from pygtkhelpers.gthreads import gtk_threadsafe
+from pygtkhelpers.ui.dialogs import yesno, animation_dialog
+from zmq_plugin.schema import decode_content_data
 
-matplotlib.use('GTK3Agg')  # Use GTK3 backend
-from matplotlib.backends.backend_gtk3agg import FigureCanvasGTK3Agg as FigureCanvas
+matplotlib.use('Gtk3Agg')  # Use Gtk3 backend
+
 from matplotlib.figure import Figure
 
 # JSON tricks for advanced JSON serialization (e.g., NumPy arrays)
@@ -47,7 +53,7 @@ from logging_helpers import _L  # Adjust import based on actual module location
 
 # If using specific plugins or interfaces from your application framework
 # These will need to be adjusted based on the actual structure of your project
-from microdrop.app_context import get_app, get_hub_uri
+from microdrop.app_context import get_app, get_hub_uri, MODE_REAL_TIME_MASK, MODE_RUNNING_MASK
 
 from pyutilib.component.core import Plugin, SingletonPlugin, implements, ExtensionPoint, PluginGlobals
 
@@ -57,6 +63,8 @@ from microdrop.interfaces import (IApplicationMode, IElectrodeActuator,
 
 # PyTables for HDF5-based storage (if still used)
 import tables
+
+from zmq_plugin.plugin import Plugin as ZmqPlugin
 
 # If si_prefix is a utility module for handling SI units
 import si_prefix as si
@@ -83,7 +91,7 @@ warnings.simplefilter('ignore', tables.NaturalNameWarning)
 PluginGlobals.push_env('microdrop.managed')
 
 
-def gtk_on_link_clicked(widget, uri):
+def Gtk_on_link_clicked(widget, uri):
     '''
     .. versionadded:: 2.38.1
 
@@ -91,7 +99,7 @@ def gtk_on_link_clicked(widget, uri):
 
         GtkWarning: No application is registered as handling this file
 
-    This is a known issue, e.g., https://bitbucket.org/tortoisehg/hgtk/issues/1656/link-in-about-box-doesnt-work#comment-312511
+    This is a known issue, e.g., https://bitbucket.org/tortoisehg/hGtk/issues/1656/link-in-about-box-doesnt-work#comment-312511
     '''
     webbrowser.open_new_tab(uri)
     return True
@@ -142,7 +150,7 @@ class DmfZmqPlugin(ZmqPlugin):
 def results_dialog(name, results, axis_count=1, parent=None):
     '''
     Given the name of a test and the corresponding results object, generate a
-    GTK dialog displaying:
+    Gtk dialog displaying:
 
      - The formatted text output of the results
      - The corresponding axis plot(s) (if applicable).
@@ -157,7 +165,7 @@ def results_dialog(name, results, axis_count=1, parent=None):
         Results from one or more :module:`dropbot.self_test` tests.
     axis_count : int, optional
         The number of figure axes required for plotting.
-    parent : gtk.Window, optional
+    parent : Gtk.Window, optional
         The parent window of the dialog.
 
         This allows, for example, the dialog to be launched in front of the
@@ -191,7 +199,7 @@ def results_dialog(name, results, axis_count=1, parent=None):
     if plot_func is not None:
         # Plotting function is available.
         fig = Figure()
-        canvas = FigureCanvas(fig)  # Use the GTK3Agg backend for the canvas
+        canvas = FigureCanvas(fig)  # Use the Gtk3Agg backend for the canvas
         if axis_count > 1:
             axes = [fig.add_subplot(axis_count, 1, i + 1) for i in range(axis_count)]
             plot_func(results[name], axes=axes)
@@ -296,7 +304,7 @@ def require_test_board(func):
         image_paths = sorted(images_dir.glob('insert_test_board-*.jpg'))
 
         # Assuming `animation_dialog` is a previously defined function that creates a dialog with animations
-        # and `gtk_on_link_clicked` is a callback function for when the hyperlink is clicked.
+        # and `Gtk_on_link_clicked` is a callback function for when the hyperlink is clicked.
         dialog = animation_dialog(image_paths, loop=True, buttons=Gtk.ButtonsType.OK_CANCEL)
         dialog.set_markup('<b>Please insert the DropBot test board</b>\n\n'
                           'For more info, see '
@@ -671,7 +679,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
 
                 # Do not close window when <Escape> key is pressed.
                 #
-                # See: http://www.async.com.br/faq/pygtk/index.py?req=show&file=faq10.013.htp
+                # See: http://www.async.com.br/faq/pyGtk/index.py?req=show&file=faq10.013.htp
                 async def on_response(dialog, response):
                     if response in (Gtk.RESPONSE_DELETE_EVENT, Gtk.RESPONSE_CLOSE):
                         dialog.emit_stop_by_name('response')
@@ -747,7 +755,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
 
                 # Do not close window when <Escape> key is pressed.
                 #
-                # See: http://www.async.com.br/faq/pygtk/index.py?req=show&file=faq10.013.htp
+                # See: http://www.async.com.br/faq/pyGtk/index.py?req=show&file=faq10.013.htp
                 def on_response(dialog, response):
                     if response in (Gtk.RESPONSE_DELETE_EVENT, Gtk.RESPONSE_CLOSE):
                         dialog.emit_stop_by_name('response')
@@ -772,7 +780,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
 
                 # Use `activate-link` callback to manually handle action when
                 # hyperlink is clicked/activated.
-                label.connect("activate-link", gtk_on_link_clicked)
+                label.connect("activate-link", Gtk_on_link_clicked)
 
                 hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
 
@@ -878,7 +886,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
         '''
         return self._dropbot_connected
 
-    @gtk_threadsafe  # Execute in GTK main thread
+    @gtk_threadsafe  # Execute in Gtk main thread
     @error_ignore(lambda exception, func, self, test_name, *args:
                   _L().error('Error executing: "%s"', test_name,
                              exc_info=True))
@@ -999,7 +1007,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
         vbox.show_all()
 
         # Add DropBot help entry to main window `Help` menu.
-        menu_item = gtk.ImageMenuItem(stock_id=gtk.STOCK_HELP)
+        menu_item = Gtk.ImageMenuItem(stock_id=Gtk.STOCK_HELP)
         menu_item.set_label('_DropBot help...')
         help_url = 'https://sci-bots.com/dropbot'
         menu_item.connect('activate', lambda menu_item:
@@ -1016,17 +1024,17 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
                 main_help_menu.remove(c)
 
         # Create head for DropBot on-board tests sub-menu.
-        tests_menu_head = gtk.MenuItem('On-board self-_tests')
+        tests_menu_head = Gtk.MenuItem('On-board self-_tests')
 
         # Create DropBot tools menu.
-        self.menu_items = [gtk.MenuItem('Run _all on-board self-tests...'),
+        self.menu_items = [Gtk.MenuItem('Run _all on-board self-tests...'),
                            tests_menu_head]
         self.menu_items[0].connect('activate', lambda menu_item:
         self.run_all_tests())
 
-        self.menu = gtk.Menu()
+        self.menu = Gtk.Menu()
         self.menu.show_all()
-        self.menu_item_root = gtk.MenuItem('_DropBot')
+        self.menu_item_root = Gtk.MenuItem('_DropBot')
         self.menu_item_root.set_submenu(self.menu)
         self.menu_item_root.show_all()
         for menu_item_i in self.menu_items:
@@ -1037,7 +1045,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
         app.main_window_controller.menu_tools.append(self.menu_item_root)
 
         # Create DropBot on-board tests sub-menu.
-        tests_menu = gtk.Menu()
+        tests_menu = Gtk.Menu()
         tests_menu_head.set_submenu(tests_menu)
 
         # List of on-board self-tests.
@@ -1051,7 +1059,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
         # Add a menu item for each test to on-board tests sub-menu.
         for i, test_i in enumerate(tests):
             axis_count_i = 2 if test_i['test_name'] == 'test_channels' else 1
-            menu_item_i = gtk.MenuItem(test_i['title'])
+            menu_item_i = Gtk.MenuItem(test_i['title'])
 
             def _exec_test(menu_item, test_name, axis_count):
                 self.execute_test(test_name, axis_count)
@@ -1107,7 +1115,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
             Stop background DropBot connection monitor task.
         '''
         if self.plugin_timeout_id is not None:
-            gobject.source_remove(self.plugin_timeout_id)
+            GObject.source_remove(self.plugin_timeout_id)
         if self.plugin is not None:
             self.plugin = None
         self.stop_monitor()
@@ -1138,7 +1146,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
         def init_ui():
             if not self.menu_items:
                 # Schedule initialization of menu user interface.  Calling
-                # `create_ui()` directly is not thread-safe, since it includes GTK
+                # `create_ui()` directly is not thread-safe, since it includes Gtk
                 # code.
                 self.create_ui()
             else:
@@ -1154,7 +1162,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
         self.plugin.reset()
 
         # Periodically process outstanding message received on plugin sockets.
-        self.plugin_timeout_id = gtk.timeout_add(10, self.plugin.check_sockets)
+        self.plugin_timeout_id = Gtk.timeout_add(10, self.plugin.check_sockets)
 
         # Register electrode commands.
         for medium in ('liquid', 'filler'):
@@ -1635,7 +1643,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
         concurrent.futures.Future
             Asynchronous results of tests.  The `result()` method may be used
             to block until tests are complete, **_but_** **MUST** not be called
-            from the GTK main thread, since doing so would prevent the progress
+            from the Gtk main thread, since doing so would prevent the progress
             dialog from displaying/updating.
         '''
         if tests is None:
@@ -1681,19 +1689,19 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
         def _show_progress_dialog():
             app = get_app()
             parent = app.main_window_controller.view
-            dialog = gtk.MessageDialog(buttons=gtk.BUTTONS_CANCEL,
-                                       flags=gtk.DIALOG_MODAL |
-                                             gtk.DIALOG_DESTROY_WITH_PARENT,
+            dialog = Gtk.MessageDialog(buttons=Gtk.BUTTONS_CANCEL,
+                                       flags=Gtk.DIALOG_MODAL |
+                                             Gtk.DIALOG_DESTROY_WITH_PARENT,
                                        parent=parent)
             dialog.set_icon(parent.get_icon())
             dialog.set_title('DropBot self tests')
             dialog.props.text = 'Running DropBot diagnostic self tests.'
             dialog.props.destroy_with_parent = True
-            dialog.props.window_position = gtk.WIN_POS_MOUSE
+            dialog.props.window_position = Gtk.WIN_POS_MOUSE
             # Disable `X` window close button.
             dialog.props.deletable = False
             content_area = dialog.get_content_area()
-            progress = gtk.ProgressBar()
+            progress = Gtk.ProgressBar()
             content_area.pack_start(progress, fill=True, expand=True, padding=5)
             content_area.show_all()
             cancel_button = dialog.get_action_area().get_children()[0]
@@ -1720,7 +1728,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
             # Launch dialog to show test activity and wait until test has
             # completed.
             response = dialog.run()
-            if response in (gtk.RESPONSE_DELETE_EVENT, gtk.RESPONSE_CANCEL):
+            if response in (Gtk.RESPONSE_DELETE_EVENT, Gtk.RESPONSE_CANCEL):
                 # User clicked cancel button.  Cancel remaining tests.
                 task.cancel()
                 if not future.done():
@@ -1746,7 +1754,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
             response = yesno('Use cached value for c<sub>liquid</sub> '
                              'and c<sub>filler</sub>?')
             # reset the cached capacitance values
-            if response == gtk.RESPONSE_NO:
+            if response == Gtk.RESPONSE_NO:
                 self.set_app_values(dict(c_liquid=0, c_filler=0))
 
     def get_schedule_requests(self, function_name):
