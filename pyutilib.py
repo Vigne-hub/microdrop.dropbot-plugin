@@ -39,7 +39,7 @@ import pandas as pd
 
 # Asyncio for ZMQ requires aiozmq or similar
 # Ensure zmq.asyncio is installed or available in your environment
-import zmq.asyncio as zmq
+import zmq
 
 # Matplotlib with GTK3 backend
 import matplotlib
