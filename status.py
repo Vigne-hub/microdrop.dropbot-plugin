@@ -4,14 +4,14 @@ from collections import OrderedDict
 import logging
 
 from logging_helpers import _L
-from markdown2pango import markdown2pango
-from pygtkhelpers.gthreads import gtk_threadsafe
+from microdrop_libs.markdown2pango import markdown2pango
+from microdrop_libs.pygtkhelpers.gthreads import gtk_threadsafe
 import gi
 
 gi.require_version('Gtk', "3.0")
 from gi.repository import Gtk as gtk
 import path_helpers as ph
-import pygtkhelpers as pgh
+from microdrop_libs import pygtkhelpers as pgh
 import si_prefix as si
 
 PLUGIN_PATH = ph.path(__file__).parent.realpath()

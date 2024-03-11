@@ -1,53 +1,24 @@
 import asyncio
-import gzip
-import logging
 from concurrent.futures import ThreadPoolExecutor
+from functools import wraps
 import datetime as dt
+import gzip
 import json
 import re
 import threading
 import warnings
 import webbrowser
-import zlib
-from functools import wraps
-
-from matplotlib.backends.backend_template import FigureCanvas
-from microdrop.plugin_manager import emit_signal, get_service_instance_by_name, ScheduleRequest
-from past.builtins import unicode
 
 from asyncio_helpers import cancellable, sync
-from pathlib import Path
-
-import markdown2pango
-import blinker
-from dropbot import EVENT_ENABLE, EVENT_CHANNELS_UPDATED, EVENT_SHORTS_DETECTED
-from adodbapi.examples.db_print import db
-from debounce import Debounce
 from gi.repository import Gtk, GLib, GObject
-import numpy as np
-import pandas as pd
-
-# Asyncio for ZMQ requires aiozmq or similar
-# Ensure zmq.asyncio is installed or available in your environment
 import zmq.asyncio as zmq
+from matplotlib.backends.backend_gtk3agg import FigureCanvasGTK3Agg as FigureCanvas
 
-# Matplotlib with Gtk3 backend
-import matplotlib
-from pygtkhelpers.gthreads import gtk_threadsafe
-from pygtkhelpers.ui.dialogs import yesno, animation_dialog
-from zmq_plugin.schema import decode_content_data
+from microdrop_libs.pygtkhelpers.ui.dialogs import yesno, animation_dialog
 
-matplotlib.use('Gtk3Agg')  # Use Gtk3 backend
+from microdrop_libs.debounce import Debounce
 
-from matplotlib.figure import Figure
-
-# JSON tricks for advanced JSON serialization (e.g., NumPy arrays)
-import json_tricks
-
-# Assuming flatland for form validation (if still necessary)
-from flatland import Integer, Float, Form, Boolean
-from flatland.validation import ValueAtLeast, ValueAtMost
-
+from dropbot import EVENT_ENABLE, EVENT_CHANNELS_UPDATED, EVENT_SHORTS_DETECTED
 # If using custom or additional logging helpers
 from logging_helpers import _L  # Adjust import based on actual module location
 
@@ -55,7 +26,10 @@ from logging_helpers import _L  # Adjust import based on actual module location
 # These will need to be adjusted based on the actual structure of your project
 from microdrop.app_context import get_app, get_hub_uri, MODE_REAL_TIME_MASK, MODE_RUNNING_MASK
 
-from pyutilib.component.core import Plugin, SingletonPlugin, implements, ExtensionPoint, PluginGlobals
+# Fake error in pycharm
+from microdrop.plugin_manager import (Plugin, implements, PluginGlobals,
+                                      ScheduleRequest, emit_signal,
+                                      get_service_instance_by_name)
 
 from microdrop.plugin_helpers import (StepOptionsController, AppDataController, hub_execute)
 from microdrop.interfaces import (IApplicationMode, IElectrodeActuator,
@@ -64,10 +38,42 @@ from microdrop.interfaces import (IApplicationMode, IElectrodeActuator,
 # PyTables for HDF5-based storage (if still used)
 import tables
 
-from zmq_plugin.plugin import Plugin as ZmqPlugin
+from microdrop_libs.zmq_plugin.plugin import Plugin as ZmqPlugin
 
 # If si_prefix is a utility module for handling SI units
 import si_prefix as si
+
+from flatland import Integer, Float, Form, Boolean
+from flatland.validation import ValueAtLeast, ValueAtMost
+
+from matplotlib.figure import Figure
+
+from microdrop.plugin_manager import (
+                                      ScheduleRequest, emit_signal,
+                                      get_service_instance_by_name)
+
+from microdrop_libs.pygtkhelpers.gthreads import gtk_threadsafe
+from microdrop_libs.pygtkhelpers.ui.dialogs import animation_dialog
+from microdrop_libs.zmq_plugin.schema import decode_content_data
+
+import blinker
+
+import dropbot as db
+import dropbot.hardware_test
+import dropbot.monitor
+import dropbot.self_test
+import dropbot.threshold
+
+
+# [1]: http://json-tricks.readthedocs.io/en/latest/#numpy-arrays
+import json_tricks
+from microdrop_libs import markdown2pango
+import numpy as np
+import pandas as pd
+import path_helpers as ph
+
+import zmq
+
 
 # Adjust based on actual module locations and names
 from ._version import get_versions
@@ -79,6 +85,7 @@ from .status import DropBotStatusView
 __version__ = get_versions()['version']
 del get_versions
 
+
 # Prevent warning about potential future changes to Numpy scalar encoding
 # behaviour.
 json_tricks.NumpyEncoder.SHOW_SCALAR_WARNING = False
@@ -88,7 +95,7 @@ json_tricks.NumpyEncoder.SHOW_SCALAR_WARNING = False
 # [1]: https://www.mail-archive.com/pytables-users@lists.sourceforge.net/msg01130.html
 warnings.simplefilter('ignore', tables.NaturalNameWarning)
 
-PluginGlobals.push_env('microdrop.managed')
+PluginGlobals.add_env('microdrop.managed')
 
 
 def gtk_on_link_clicked(widget, uri):
@@ -99,7 +106,7 @@ def gtk_on_link_clicked(widget, uri):
 
         GtkWarning: No application is registered as handling this file
 
-    This is a known issue, e.g., https://bitbucket.org/tortoisehg/hGtk/issues/1656/link-in-about-box-doesnt-work#comment-312511
+    This is a known issue, e.g., https://bitbucket.org/tortoisehg/hgtk/issues/1656/link-in-about-box-doesnt-work#comment-312511
     '''
     webbrowser.open_new_tab(uri)
     return True
@@ -109,7 +116,6 @@ class DmfZmqPlugin(ZmqPlugin):
     """
     API for adding/clearing droplet routes.
     """
-
     def __init__(self, parent, *args, **kwargs):
         self.parent = parent
         super().__init__(*args, **kwargs)  # Python 3 simplified super() call
@@ -150,7 +156,7 @@ class DmfZmqPlugin(ZmqPlugin):
 def results_dialog(name, results, axis_count=1, parent=None):
     '''
     Given the name of a test and the corresponding results object, generate a
-    Gtk dialog displaying:
+    GTK dialog displaying:
 
      - The formatted text output of the results
      - The corresponding axis plot(s) (if applicable).
@@ -239,7 +245,7 @@ def require_connection(log_level='error'):
         @wraps(func)
         def _wrapped(self, *args, **kwargs):
             if not self.dropbot_connected.is_set():
-                logger = logging.getLogger()  # Assuming _L() was a logger getter
+                logger = _L()
                 log_func = getattr(logger, log_level)
                 log_func('DropBot is not connected.')
             else:
@@ -299,12 +305,9 @@ def require_test_board(func):
 
     @wraps(func)
     def _wrapped(*args, **kwargs):
-        plugin_dir = Path(__file__).resolve().parent
-        images_dir = plugin_dir / 'images' / 'insert_test_board'
-        image_paths = sorted(images_dir.glob('insert_test_board-*.jpg'))
-
-        # Assuming `animation_dialog` is a previously defined function that creates a dialog with animations
-        # and `gtk_on_link_clicked` is a callback function for when the hyperlink is clicked.
+        plugin_dir = ph.path(__file__).realpath().parent
+        images_dir = plugin_dir.joinpath('images', 'insert_test_board')
+        image_paths = sorted(images_dir.files('insert_test_board-*.jpg'))
         dialog = animation_dialog(image_paths, loop=True,
                                   buttons=Gtk.ButtonsType.OK_CANCEL)
         dialog.set_markup('<b>Please insert the DropBot test board</b>\n\n'
@@ -329,7 +332,7 @@ def require_test_board(func):
 
 
 class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
-                    AppDataController):
+                    AppDataController, metaclass=classmaker()):
     """
     This class is automatically registered with the PluginManager.
 
@@ -344,7 +347,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
     # `gobject.GObject`.  See [here][1] for more details.
     #
     # [1]: http://code.activestate.com/recipes/204197-solving-the-metaclass-conflict/
-    __metaclass__ = classmaker()
+   # __metaclass__ = classmaker()
 
     #: ..versionadded:: 0.19
     implements(IPlugin)
@@ -366,12 +369,12 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
             Deprecate all step fields _except_ ``volume_threshold`` as part of
             refactoring to implement `IElectrodeActuator` interface.
         """
-        return Form.of(  #: .. versionadded:: 0.18
-            Float.named('volume_threshold')
-            .using(default=0,
-                   optional=True,
-                   validators=[ValueAtLeast(minimum=0),
-                               ValueAtMost(maximum=1.0)]))
+        return Form.of(#: .. versionadded:: 0.18
+                       Float.named('volume_threshold')
+                       .using(default=0,
+                              optional=True,
+                              validators=[ValueAtLeast(minimum=0),
+                                          ValueAtMost(maximum=1.0)]))
 
     def __init__(self):
         """
@@ -436,7 +439,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
         self.menu_items = []
         self.menu = None
         self.menu_item_root = None
-        self.diagnostics_results_dir = Path('.dropbot-diagnostics')
+        self.diagnostics_results_dir = ph.path('.dropbot-diagnostics')
         self.actuated_area = 0
         self.monitor_task = None
 
@@ -787,8 +790,9 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
 
                 image = Gtk.Image()
                 image_size = 150
-                image_path = Path(__file__).parent / 'dropbot-power.png'
-                pixbuf = Gtk.Gdk.pixbuf_new_from_file(image_path)
+                image_path = ph.path(__file__).parent\
+                    .joinpath('dropbot-power.png')
+                pixbuf = Gtk.gdk.pixbuf_new_from_file(image_path)
                 if pixbuf.props.width > pixbuf.props.height:
                     scale = image_size / pixbuf.props.width
                 else:
@@ -906,7 +910,8 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
         db.hardware_test.log_results(results, self.diagnostics_results_dir)
         format_func = getattr(db.self_test, 'format_%s_results' % test_name)
         message = format_func(results[test_name])
-        map(_L().info, map(unicode.rstrip, unicode(message).splitlines()))
+        for line in str(message).splitlines():
+            _L().info(line.rstrip())
 
         app = get_app()
         parent = app.main_window_controller.view
@@ -955,8 +960,8 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
             #     working directory (with raw JSON results embedded in a
             #     `<script id="results" .../> tag).
             #  2. Launch HTML report in web browser.
-            results_dir = Path(self.diagnostics_results_dir)
-            results_dir.mkdir(parents=True, exist_ok=True)
+            results_dir = ph.path(self.diagnostics_results_dir)
+            results_dir.makedirs_p()
 
             # Create unique output filenames based on current timestamp.
             timestamp = dt.datetime.utcnow().isoformat().replace(':', '_')

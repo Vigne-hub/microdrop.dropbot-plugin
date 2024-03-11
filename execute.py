@@ -12,7 +12,7 @@ import dropbot.hardware_test
 import dropbot.self_test
 import dropbot.threshold
 
-from logging_helpers import _L
+from microdrop_libs.logging_helpers import _L
 
 NAME = 'dropbot_plugin'
 

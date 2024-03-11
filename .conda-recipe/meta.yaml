@@ -1,8 +1,4 @@
-{% if GIT_DESCRIBE_NUMBER > '0' %}
-{% set GIT_VERSION = GIT_DESCRIBE_TAG[1:] + '.post' + GIT_DESCRIBE_NUMBER %}
-{% else %}
-{% set GIT_VERSION = GIT_DESCRIBE_TAG[1:] %}
-{% endif %}
+
 # source will be downloaded prior to filling in jinja templates
 # Example assumes that this folder has setup.py in it
 source:
@@ -10,7 +6,7 @@ source:
 
 package:
   name: microdrop.dropbot-plugin
-  version: {{ GIT_VERSION }}
+  version: 0.2
 
 build:
   number: 0
@@ -18,13 +14,12 @@ build:
 
 requirements:
   build:
-    - conda-helpers >=0.4
-    - debounce >=0.3
-    - dropbot >=1.73.4
-    - json-tricks >=3.8.0
-    - logging-helpers >=0.4
-    - microdrop-plugin-template
-    - microdrop-plugin-manager >=0.14
+    - conda-helpers
+    - dropbot
+    - json-tricks
+    - microdrop_plugin_template
+    - microdrop-plugin-manager >=0.8.6
+    - arrow
 
      #TODO: we just packaged them quickly: they are alpha versions, need to take care of them
     - microdrop_helpers # this is actually microdrop, we have to fix it
@@ -32,48 +27,11 @@ requirements:
 
     - or-event
     - pandas
-    - path_helpers >=0.5
-    - pip-helpers
+    - path-helpers
     - pytables
     - pyyaml
     - semantic_version
     - si-prefix
-    - zmq-plugin
-
-  run:
-    - conda-helpers >=0.4
-
-    - debounce >=0.3
-
-    - dropbot >=1.68
-    - flatland-fork
-    - json-tricks >=3.8.0
-
-    - logging-helpers >=0.4
-
-    - microdrop >=2.35
-    - microdrop-plugin-template
-    - microdrop-utility
-
-    - or-event
-    - pandas
-    - path_helpers >=0.5
-    - pip-helpers
-    - pytables
-    - pyyaml
-    #: .. versionadded:: 2.27
-    - semantic_version
-    #: .. versionadded:: 2.24
-    - si-prefix
-    #: .. versionadded:: 2.33
-    - trollius
-    # .. versionchanged:: 0.16
-    - wheeler.pygtkhelpers >=0.19
-    - zmq-plugin
-
-test:
-  commands:
-    - python -m mpm.bin.import_test -a {{ PKG_NAME }}
 
 about:
   home: http://github.com/wheeler-microfluidics/dropbot-plugin
