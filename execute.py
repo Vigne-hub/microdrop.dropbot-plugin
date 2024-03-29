@@ -97,11 +97,8 @@ async def actuate(proxy, dmf_device, electrode_states, duration_s=0,
         #  1. Set control board state of channels according to requested
         #     actuation states.
         #  2. Wait for channels to be actuated.
-        actuated_channels = await asyncio.get_running_loop().run_in_executor(
-            None,  # Uses the default executor (a thread pool)
-            db.threshold.actuate_channels,  # The function to run in a separate thread
-            proxy, requested_channels, 5  # Arguments to the function
-        )
+        actuated_channels = \
+            db.threshold.actuate_channels(proxy, requested_channels, timeout=5)
 
         #  3. Connect to `capacitance-updated` signal to record capacitance
         #     values measured during the step.
@@ -143,20 +140,38 @@ async def actuate(proxy, dmf_device, electrode_states, duration_s=0,
                 logger.debug(line)
         # Wait for target capacitance to be reached in background thread,
         # timing out if the specified duration is exceeded.
+        co_future = \
+            db.threshold.co_target_capacitance(proxy,
+                                               requested_channels,
+                                               target_capacitance,
+                                               allow_disabled=False,
+                                               timeout=duration_s)
         try:
-            dropbot_event = await asyncio.wait_for(
-                db.threshold.co_target_capacitance(proxy, requested_channels, target_capacitance, allow_disabled=False,
-                                                   timeout=duration_s), duration_s)
+            dropbot_event = await asyncio.wait_for(co_future, duration_s)
             _L().debug('target capacitance reached: `%s`', dropbot_event)
             actuated_channels = dropbot_event['actuated_channels']
 
             capacitance_messages = dropbot_event['capacitance_updates']
+            # Add actuated area to capacitance update messages.
             for capacitance_i in capacitance_messages:
                 capacitance_i['actuated_area'] = actuated_area
                 capacitance_i.pop('actuation_uuid1', None)
 
-            result['threshold'] = {'target': dropbot_event['target'], 'measured': dropbot_event['new_value'],
-                                   'start': dropbot_event['start'], 'end': dropbot_event['end']}
+            result['threshold'] = {'target': dropbot_event['target'],
+                                   'measured': dropbot_event['new_value'],
+                                   'start': dropbot_event['start'],
+                                   'end': dropbot_event['end']}
+
+            # Show notification in main window status bar.
+            if logger.getEffectiveLevel() <= logging.DEBUG:
+                status = ('reached %sF (> %sF) over electrodes: %s (%.1f '
+                          '%sm^2) after %ss' %
+                          (si.si_format(result['threshold']['measured']),
+                           si.si_format(result['threshold']['target']),
+                           actuated_channels, si_length ** 2, si_unit,
+                           (dropbot_event['end'] -
+                            dropbot_event['start']).total_seconds()))
+                logger.debug(status)
         except asyncio.TimeoutError:
             raise RuntimeError('Timed out waiting for target capacitance.')
 
@@ -184,7 +199,8 @@ def execute(proxy, dmf_device, plugin_kwargs, signals):
         async def _wrapped(*args, **kwargs):
             if proxy is None:
                 raise RuntimeError('DropBot not connected.')
-            return await coro(*args, **kwargs)
+            result = await coro(*args, **kwargs)
+            return result
         return _wrapped
 
     @verify_connected

@@ -54,7 +54,7 @@ def get_noconflict_metaclass(bases, left_metas, right_metas):
         raise TypeError("Incompatible root metatypes", needed_metas)
     else:  # gotta work...
         metaname = '_' + ''.join([m.__name__ for m in needed_metas])
-        meta = type(metaname, needed_metas, {})
+        meta = classmaker()(metaname, needed_metas, {})
     memoized_metaclasses_map[needed_metas] = meta
     return meta
 

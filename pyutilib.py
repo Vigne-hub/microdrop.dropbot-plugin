@@ -49,8 +49,8 @@ from flatland.validation import ValueAtLeast, ValueAtMost
 from matplotlib.figure import Figure
 
 from microdrop.plugin_manager import (
-                                      ScheduleRequest, emit_signal,
-                                      get_service_instance_by_name)
+    ScheduleRequest, emit_signal,
+    get_service_instance_by_name)
 
 from microdrop_libs.pygtkhelpers.gthreads import gtk_threadsafe
 from microdrop_libs.pygtkhelpers.ui.dialogs import animation_dialog
@@ -64,7 +64,6 @@ import dropbot.monitor
 import dropbot.self_test
 import dropbot.threshold
 
-
 # [1]: http://json-tricks.readthedocs.io/en/latest/#numpy-arrays
 import json_tricks
 from microdrop_libs import markdown2pango
@@ -73,7 +72,6 @@ import pandas as pd
 import path_helpers as ph
 
 import zmq
-
 
 # Adjust based on actual module locations and names
 from ._version import get_versions
@@ -84,7 +82,6 @@ from .status import DropBotStatusView
 # Clean up version import
 __version__ = get_versions()['version']
 del get_versions
-
 
 # Prevent warning about potential future changes to Numpy scalar encoding
 # behaviour.
@@ -116,11 +113,12 @@ class DmfZmqPlugin(ZmqPlugin):
     """
     API for adding/clearing droplet routes.
     """
+
     def __init__(self, parent, *args, **kwargs):
         self.parent = parent
-        super().__init__(*args, **kwargs)  # Python 3 simplified super() call
+        super(DmfZmqPlugin, self).__init__(*args, **kwargs)
 
-    async def check_sockets(self):
+    def check_sockets(self):
         """
         Check for messages on command and subscription sockets and process
         any messages accordingly.
@@ -132,25 +130,25 @@ class DmfZmqPlugin(ZmqPlugin):
             reports the channels have been actuated_**.
         """
         try:
-            msg_frames = await self.command_socket.recv_multipart(zmq.NOBLOCK)
-            await self.on_command_recv(msg_frames)
+            msg_frames = self.command_socket.recv_multipart(zmq.NOBLOCK)
         except zmq.Again:
-            pass  # No message received, non-blocking mode
+            pass
+        else:
+            self.on_command_recv(msg_frames)
         return True
 
-    async def on_execute__measure_liquid_capacitance(self, request):
-        await self.parent.on_measure_liquid_capacitance()
+    def on_execute__measure_liquid_capacitance(self, request):
+        self.parent.on_measure_liquid_capacitance()
 
-    async def on_execute__measure_filler_capacitance(self, request):
-        await self.parent.on_measure_filler_capacitance()
+    def on_execute__measure_filler_capacitance(self, request):
+        self.parent.on_measure_filler_capacitance()
 
-    async def on_execute__find_liquid(self, request):
-        return await self.parent.find_liquid()
+    def on_execute__find_liquid(self, request):
+        return self.parent.find_liquid()
 
-    async def on_execute__identify_electrode(self, request):
-        # Assuming decode_content_data is compatible with asyncio or not blocking
+    def on_execute__identify_electrode(self, request):
         data = decode_content_data(request)
-        await self.parent.identify_electrode(data['electrode_id'])
+        self.parent.identify_electrode(data['electrode_id'])
 
 
 def results_dialog(name, results, axis_count=1, parent=None):
@@ -205,19 +203,21 @@ def results_dialog(name, results, axis_count=1, parent=None):
     if plot_func is not None:
         # Plotting function is available.
         fig = Figure()
-        canvas = FigureCanvas(fig)  # Use the Gtk3Agg backend for the canvas
+        canvas = FigureCanvas(fig)
         if axis_count > 1:
             axes = [fig.add_subplot(axis_count, 1, i + 1) for i in range(axis_count)]
             plot_func(results[name], axes=axes)
         else:
+            # Plotting function plots to a single axis.
             axis = fig.add_subplot(111)
             plot_func(results[name], axis=axis)
 
-        # Allocate minimum of 300 pixels height per plot.
+        # Allocate minimum of 300 pixels height for report text.
         row_heights += axis_count * [300]
         fig.tight_layout()
         content_area.pack_start(canvas, fill=True, expand=True, padding=0)
 
+    # Allocate minimum pixels height based on the number of axes.
     dialog.set_default_size(600, sum(row_heights))
     content_area.show_all()
     return dialog
@@ -310,11 +310,16 @@ def require_test_board(func):
         image_paths = sorted(images_dir.files('insert_test_board-*.jpg'))
         dialog = animation_dialog(image_paths, loop=True,
                                   buttons=Gtk.ButtonsType.OK_CANCEL)
+
+        dialog.props.use_markup = True
         dialog.set_markup('<b>Please insert the DropBot test board</b>\n\n'
                           'For more info, see '
                           '<a href="https://github.com/sci-bots/dropbot-v3/wiki/DropBot-Test-Board#loading-dropbot-test-board">'
                           'the DropBot Test Board documentation</a>.')
 
+        # Use `activate-link` callback to manually handle action when hyperlink
+        # is clicked/activated.
+        dialog.label.connect("activate-link", gtk_on_link_clicked)
         # Set default focus to OK button.
         action_area = dialog.get_action_area()
         ok_button = [child for child in action_area.get_children() if child.get_label() == "OK"][0]
@@ -347,7 +352,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
     # `gobject.GObject`.  See [here][1] for more details.
     #
     # [1]: http://code.activestate.com/recipes/204197-solving-the-metaclass-conflict/
-   # __metaclass__ = classmaker()
+    __metaclass__ = classmaker()
 
     #: ..versionadded:: 0.19
     implements(IPlugin)
@@ -369,12 +374,12 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
             Deprecate all step fields _except_ ``volume_threshold`` as part of
             refactoring to implement `IElectrodeActuator` interface.
         """
-        return Form.of(#: .. versionadded:: 0.18
-                       Float.named('volume_threshold')
-                       .using(default=0,
-                              optional=True,
-                              validators=[ValueAtLeast(minimum=0),
-                                          ValueAtMost(maximum=1.0)]))
+        return Form.of(  #: .. versionadded:: 0.18
+            Float.named('volume_threshold')
+            .using(default=0,
+                   optional=True,
+                   validators=[ValueAtLeast(minimum=0),
+                               ValueAtMost(maximum=1.0)]))
 
     def __init__(self):
         """
@@ -511,13 +516,12 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
             .connect(_on_channels_updated, weak=False)
 
         @gtk_threadsafe
-        async def refresh_channels(self):
+        def refresh_channels(self):
             """
             Asynchronously refresh channel states, particularly after detecting shorts.
             """
             self.control_board.turn_off_all_channels()
             self.control_board.state_of_channels = self.channel_states
-            # Assuming turn_off_all_channels and state_of_channels setter are async-safe
 
         async def _on_shorts_detected(sender, **message):
             """
@@ -531,16 +535,18 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
             if values:
                 status = ('Shorts detected.  Disabled the following '
                           'channels: %s' % message['values'])
-
-                await asyncio.create_task(self.log_error_async(
-                    f'Shorts were detected on the following channels:\n\n    {values}\n\nYou may continue using the '
-                    f'DropBot, but the affected channels have been disabled until the DropBot is restarted (e.g., '
-                    f'unplug all cables and plug back in).'))
+                gtk_threadsafe(_L().error) \
+                    ('Shorts were detected on the following '
+                     'channels:\n\n    %s\n\n'
+                     'You may continue using the DropBot, but the '
+                     'affected channels have been disabled until the'
+                     ' DropBot is restarted (e.g., unplug all cables'
+                     ' and plug back in).', message['values'])
             else:
                 status = 'No shorts detected.'
             # XXX Refresh channels since some channels may have been
             # disabled.
-            await self.refresh_channels()
+            refresh_channels()
             self.push_status(status)
 
         self.dropbot_signals.signal('shorts-detected') \
@@ -565,7 +571,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
                 turned off until the DropBot is restarted (e.g., unplug all
                 cables and plug back in).'''.strip()
             # XXX Refresh channels since channels were disabled.
-            await refresh_channels()
+            refresh_channels()
             app = get_app()
             # Disable real-time mode.
             gtk_threadsafe(app.set_app_values)({'realtime_mode': False})
@@ -669,22 +675,21 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
                        % kwargs)
 
             @sync(gtk_threadsafe)
-            async def version_mismatch_dialog():
+            def version_mismatch_dialog():
                 parent = get_app().main_window_controller.view
-                dialog = Gtk.Dialog('DropBot driver version mismatch',
-                                    buttons=('_Update', Gtk.RESPONSE_ACCEPT,
-                                             '_Ignore', Gtk.RESPONSE_OK,
-                                             '_Skip', Gtk.RESPONSE_NO),
-                                    flags=Gtk.DIALOG_MODAL |
-                                          Gtk.DIALOG_DESTROY_WITH_PARENT,
-                                    parent=parent)
+                dialog = Gtk.Dialog(title='DropBot driver version mismatch',
+                                    parent=parent,
+                                    flags=Gtk.DialogFlags.MODAL | Gtk.DialogFlags.DESTROY_WITH_PARENT)
+                dialog.add_buttons('_Update', Gtk.ResponseType.ACCEPT,
+                                   '_Ignore', Gtk.ResponseType.OK,
+                                   '_Skip', Gtk.ResponseType.NO)
                 # Disable dialog window close "X" button.
                 dialog.props.deletable = False
 
                 # Do not close window when <Escape> key is pressed.
                 #
                 # See: http://www.async.com.br/faq/pygtk/index.py?req=show&file=faq10.013.htp
-                async def on_response(dialog, response):
+                def on_response(dialog, response):
                     if response in (Gtk.RESPONSE_DELETE_EVENT, Gtk.RESPONSE_CLOSE):
                         dialog.emit_stop_by_name('response')
 
@@ -749,11 +754,11 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
             @sync(gtk_threadsafe)
             def no_power_dialog():
                 parent = get_app().main_window_controller.view
-                dialog = Gtk.Dialog('No DropBot 12V power supply detected',
-                                    buttons=('_Retry', Gtk.RESPONSE_OK),
-                                    flags=Gtk.DIALOG_MODAL |
-                                          Gtk.DIALOG_DESTROY_WITH_PARENT,
-                                    parent=parent)
+                dialog = Gtk.Dialog(title='No DropBot 12V power supply detected',
+                                    parent=parent,
+                                    flags=Gtk.DialogFlags.MODAL | Gtk.DialogFlags.DESTROY_WITH_PARENT)
+                dialog.add_buttons('_Retry', Gtk.ResponseType.OK)
+
                 # Disable dialog window close "X" button.
                 dialog.props.deletable = False
 
@@ -790,8 +795,9 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
 
                 image = Gtk.Image()
                 image_size = 150
-                image_path = ph.path(__file__).parent\
+                image_path = ph.path(__file__).parent \
                     .joinpath('dropbot-power.png')
+                # TODO CHECK IF ISSUE AS PIXBUF IS AN ISSUE OFTEN
                 pixbuf = Gtk.gdk.pixbuf_new_from_file(image_path)
                 if pixbuf.props.width > pixbuf.props.height:
                     scale = image_size / pixbuf.props.width
@@ -867,6 +873,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
 
         if hide_timeout_s is not None:
             # Hide status message after specified timeout.
+            # TODO: check if Glib is better here or GObject is actually the optimal
             GObject.timeout_add(int(hide_timeout_s * 1e3),
                                 statusbar.remove_message, context_id,
                                 message_id)
@@ -1035,8 +1042,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
         # Create DropBot tools menu.
         self.menu_items = [Gtk.MenuItem('Run _all on-board self-tests...'),
                            tests_menu_head]
-        self.menu_items[0].connect('activate', lambda menu_item:
-        self.run_all_tests())
+        self.menu_items[0].connect('activate', lambda menu_item: self.run_all_tests())
 
         self.menu = Gtk.Menu()
         self.menu.show_all()
@@ -1121,7 +1127,7 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
             Stop background DropBot connection monitor task.
         '''
         if self.plugin_timeout_id is not None:
-            GObject.source_remove(self.plugin_timeout_id)
+            GLib.source_remove(self.plugin_timeout_id)
         if self.plugin is not None:
             self.plugin = None
         self.stop_monitor()
@@ -1688,10 +1694,10 @@ class DropBotPlugin(Plugin, GObject.GObject, StepOptionsController,
         def _show_progress_dialog():
             app = get_app()
             parent = app.main_window_controller.view
-            dialog = Gtk.MessageDialog(buttons=Gtk.BUTTONS_CANCEL,
-                                       flags=Gtk.DIALOG_MODAL |
-                                             Gtk.DIALOG_DESTROY_WITH_PARENT,
+            dialog = Gtk.MessageDialog(buttons=Gtk.ButtonsType.CANCEL,
+                                       modal=True,
                                        parent=parent)
+            dialog.set_destroy_with_parent(True)
             dialog.set_icon(parent.get_icon())
             dialog.set_title('DropBot self tests')
             dialog.props.text = 'Running DropBot diagnostic self tests.'
